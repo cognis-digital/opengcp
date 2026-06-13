@@ -1,5 +1,46 @@
 # opengcp
 
+## Usage — step by step
+
+A typical local-cloud lifecycle with the `opengcp` console command:
+
+1. **Install** the CLI (puts `opengcp` on your PATH):
+
+   ```bash
+   pipx install git+https://github.com/cognis-digital/opengcp.git
+   ```
+
+2. **Start the all-in-one server.** With no data dir everything is in-memory; pass `--data-dir` to persist storage and the document DB (the `serve` subcommand also accepts `--host` and `--port`):
+
+   ```bash
+   opengcp serve --port 8085 --data-dir ./opengcp-data
+   ```
+
+3. **Exercise the services from the CLI.** The convenience subcommands operate on the same `--data-dir`, so you can script storage, Firestore, and Pub/Sub without an SDK. Note `storage cp` takes `<file> <bucket/name>` and `cat` writes the object to stdout:
+
+   ```bash
+   opengcp --data-dir ./opengcp-data storage mb mybucket
+   opengcp --data-dir ./opengcp-data storage cp ./photo.jpg mybucket/photo.jpg
+   opengcp --data-dir ./opengcp-data fs set users u1 '{"name":"ada"}'
+   opengcp --data-dir ./opengcp-data pubsub publish events "hello"
+   ```
+
+4. **Read the output.** `fs get` prints the document as indented JSON, `storage ls` prints `<size>  <name>` rows, and `storage cat` streams raw bytes — all pipeable:
+
+   ```bash
+   opengcp --data-dir ./opengcp-data fs get users u1            # indented JSON
+   opengcp --data-dir ./opengcp-data storage ls mybucket        # size + name
+   opengcp --data-dir ./opengcp-data storage cat mybucket/photo.jpg > out.jpg
+   ```
+
+5. **Use it in CI.** Seed fixtures against a throwaway data dir and assert on the JSON — fast, free, deterministic, no credentials:
+
+   ```bash
+   opengcp version
+   opengcp --data-dir ./ci fs set users u1 '{"name":"ada"}'
+   test "$(opengcp --data-dir ./ci fs get users u1 | jq -r .name)" = "ada"
+   ```
+
 ## What is this?
 
 **opengcp** is an independent, open-source **local reimplementation of the core
