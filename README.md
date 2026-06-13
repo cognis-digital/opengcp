@@ -146,6 +146,16 @@ opengcp fs get users u1
 opengcp pubsub publish events "hello"
 ```
 
+<!-- cognis:domains:start -->
+## Domains
+
+**Primary domain:** Cloud & DevTools  ·  **JTF MERIDIAN division:** ATHENA-PRIME · COGNI-2
+
+**Topics:** `cognis` `devtools` `cloud` `developer-tools` `python` `cloud-emulator`
+
+Part of the **Cognis Neural Suite** — 300+ source-available tools organized across 12 domains under the JTF MERIDIAN command structure. See the [suite on GitHub](https://github.com/cognis-digital) and [jtf-meridian](https://github.com/cognis-digital/jtf-meridian) for how the pieces fit together.
+<!-- cognis:domains:end -->
+
 ## Install
 
 opengcp is **source-available** and is **not published to PyPI**. Install it
