@@ -83,22 +83,24 @@ opengcp/
   storage.py     # GCS-style object storage  (local-FS or in-memory)
   firestore.py   # document database          (SQLite or in-memory)
   pubsub.py      # publish/subscribe broker   (in-process)
-  functions.py   # event-driven function runner
+  functions.py   # event-driven function runner (http + pubsub + storage + firestore triggers)
   datastore.py   # Datastore-style entity store (SQLite or in-memory)
   bigtable.py    # Bigtable-lite (instances/tables/column-families/rows, in-memory)
   bigquery.py    # BigQuery-lite (datasets/tables/insertAll/SELECT, SQLite or in-memory)
+  tasks.py       # Cloud Tasks-lite (queues, scheduled tasks, dispatcher)
+  scheduler.py   # Cloud Scheduler-lite (cron jobs, run_now, history)
+  cloudrun.py    # Cloud Run-lite (deploy Python handler as service, invoke over HTTP)
   server.py      # one http.server exposing all services under path prefixes
   cli.py         # console entry point: `opengcp serve` + convenience commands
   __main__.py    # `python -m opengcp`
 ```
 
 Each service is a self-contained, thread-safe Python class you can import and
-use directly. The server wires all seven together and maps HTTP routes onto
-them. Storage, Firestore, Datastore, and BigQuery persist under a local
-**data dir** (`--data-dir`); with no data dir everything runs **in-memory**
-(ideal for tests). The function runner auto-wires to storage and pub/sub so
-that writing an object or publishing a message can trigger your registered
-handlers.
+use directly. The server wires all ten together and maps HTTP routes onto them.
+Storage, Firestore, Datastore, and BigQuery persist under a local **data dir**
+(`--data-dir`); with no data dir everything runs **in-memory** (ideal for
+tests). The function runner auto-wires to storage and pub/sub so that writing
+an object or publishing a message can trigger your registered handlers.
 
 ## Services
 
@@ -111,6 +113,9 @@ handlers.
 | Entity store     | `datastore.py`  | Cloud Datastore        | SQLite / RAM        | `/datastore`   |
 | Wide-column DB   | `bigtable.py`   | Cloud Bigtable         | in-process / RAM    | `/bigtable`    |
 | Analytical DB    | `bigquery.py`   | BigQuery               | SQLite / RAM        | `/bigquery`    |
+| Task queues      | `tasks.py`      | Cloud Tasks            | in-process          | `/tasks`       |
+| Cron jobs        | `scheduler.py`  | Cloud Scheduler        | in-process          | `/scheduler`   |
+| Service runner   | `cloudrun.py`   | Cloud Run              | in-process          | `/cloudrun`    |
 
 What each implements (a compatible **subset**):
 
@@ -125,12 +130,21 @@ What each implements (a compatible **subset**):
   field queries with `== != < <= > >=` plus an optional `limit`.
 - **Pub/Sub** — topics and subscriptions; fan-out (each subscription gets an
   independent copy); `pull` with ack-ids, `ack`, `nack` (immediate redelivery),
-  ack-deadline expiry + automatic redelivery, delivery-attempt counting.
-- **Function runner** — register a Python callable against an
-  `object.finalize` or `pubsub.publish` trigger (optionally scoped to a bucket
-  / topic); events dispatch synchronously, capture results and errors, and are
-  recorded in an invocation log. Auto-fired by real storage writes and
-  publishes.
+  ack-deadline expiry + automatic redelivery, delivery-attempt counting;
+  **ordering keys** (per-key serial delivery — next message in key is blocked
+  until the current one is acked); **dead-letter policy** (`maxDeliveryAttempts`
+  threshold forwards the message to a dead-letter topic); `modify_ack_deadline`
+  to extend or shrink individual in-flight deadlines; **push delivery** (register
+  a Python callable as a push handler — messages are auto-delivered and acked/nacked
+  in a daemon thread); `update_subscription` to change ack-deadline and dead-letter
+  policy after creation.
+- **Function runner** — register a Python callable against an `object.finalize`,
+  `pubsub.publish`, `http`, or `firestore.write` trigger (optionally scoped to a
+  bucket / topic / collection); events dispatch synchronously, capture results and
+  errors, and are recorded in an invocation log. Auto-fired by real storage writes
+  and publishes. HTTP-triggered functions can be invoked via
+  `POST /functions/<name>/invoke`. `firestore.write` events carry operation type
+  (CREATE / UPDATE / DELETE), new data, and old data.
 - **Entity store (Datastore-lite)** — entities with (kind, id) keys (integer or
   string ids; auto-assigned integer ids on `put`); put/get/delete; list all
   entities of a kind; programmatic `query()` with `== != < <= > >=`
@@ -150,6 +164,26 @@ What each implements (a compatible **subset**):
   with `%` wildcard), `GROUP BY col` with `COUNT(*)`, `SUM(col)`, `AVG(col)`,
   `MIN(col)`, `MAX(col)` aggregates, `ORDER BY col [ASC|DESC]`, `LIMIT n`.
   Backed by SQLite for persistence.
+- **Cloud Tasks-lite** — named queues with configurable `RetryConfig`
+  (max_attempts, exponential backoff: min_backoff, max_backoff, max_doublings)
+  and `RateLimits`; create tasks with optional `schedule_time` (deferred
+  dispatch); background dispatcher thread polls every 50 ms; register a Python
+  handler per queue or supply a `url` for real HTTP dispatch; exponential-backoff
+  retry on failure; tasks reach SUCCEEDED or FAILED terminal states; pause/resume
+  and purge queues.
+- **Cloud Scheduler-lite** — named cron jobs with full 5-field cron expression
+  parser (`*/N` steps, ranges, lists, `@hourly`/`@daily`/`@weekly`/`@monthly`/
+  `@yearly` aliases); background evaluator fires at the matching wall-clock
+  minute; `run_now` for manual dispatch; per-job execution history with success/
+  failure status and error capture; pause/resume jobs; register or replace
+  handlers after creation.
+- **Cloud Run-lite** — deploy any Python callable as a named service;
+  `invoke(name, ...)` passes an HTTP-shaped request dict (method, path, headers,
+  body, queryParams) to the handler and returns a response dict (status, headers,
+  body); configurable `ServiceConfig` (max_concurrency enforced via semaphore,
+  timeout); per-service invocation log with latency and error capture; redeploy
+  replaces the handler in-place; services exposed at
+  `POST /cloudrun/services/<name>/invoke` over the HTTP server.
 
 ## Quickstart
 
@@ -329,10 +363,12 @@ This repository ships a real, end-to-end pytest suite that round-trips data
 through every service — both by calling the service classes directly and by
 driving the actual HTTP server in-process.
 
-- **149 tests, all passing** (`python -m pytest -q` → `149 passed`).
+- **267 tests, all passing** (`python -m pytest -q` → `267 passed`).
 - Coverage by area: object storage (11 original + 20 extended), document DB (14),
-  pub/sub (11), function runner (10), HTTP server end-to-end (10), CLI (4),
-  Datastore (17), Bigtable (19), BigQuery (33).
+  pub/sub (11 original + 16 extended), function runner (10 original + 16 extended),
+  HTTP server end-to-end (10 original + 28 extended), CLI (4),
+  Datastore (17), Bigtable (19), BigQuery (33),
+  Cloud Tasks (19), Cloud Scheduler (20), Cloud Run (20).
 - CI runs the same suite on **ubuntu / macos / windows × Python 3.10–3.13**
   (see `.github/workflows/ci.yml`).
 
@@ -357,11 +393,10 @@ Not yet implemented (clearly out of scope for the current subset):
   retention policies, object ACLs, bucket notifications, HMAC keys.
 - **Firestore:** composite indexes, transactions, `array-contains` / `in`
   operators, and sub-collections.
-- **Pub/Sub:** push delivery, ordering keys, dead-letter topics, message
-  retention policies, and snapshot/seek.
-- **Cloud Functions:** HTTP-triggered functions and a remote function deployment
-  model (current runner handles `object.finalize` and `pubsub.publish`
-  in-process only).
+- **Pub/Sub:** message retention policies, snapshot/seek, filter expressions on
+  subscriptions.
+- **Cloud Functions:** remote function deployment model (load from file/module
+  path); per-function concurrency / scaling config.
 - **Datastore:** ancestor queries / entity groups, projections, multi-property
   ORDER BY, cursor-based pagination.
 - **Bigtable:** disk persistence; server-side filters (row-range,
@@ -369,6 +404,12 @@ Not yet implemented (clearly out of scope for the current subset):
   (CheckAndMutate); replication.
 - **BigQuery:** DML (INSERT/UPDATE/DELETE), streaming buffer flush, table
   partitioning, views, table export, job API, external tables.
+- **Cloud Tasks:** real-time rate limiting (token bucket), task deduplication
+  window, IAP-authenticated HTTP dispatch.
+- **Cloud Scheduler:** time-zone aware scheduling, retry config per job,
+  Pub/Sub and HTTP target types (current: Python callable only).
+- **Cloud Run:** traffic-split / revision management, volume mounts, secrets,
+  VPC connector emulation.
 - **Authentication / IAM emulation** across all services.
 
 ## License

@@ -2,10 +2,12 @@
 
 Implements a compatible SUBSET of the event-driven functions model:
 register a Python callable as a "function" bound to an event trigger, then
-fire events that invoke matching handlers. Two trigger types are supported:
+fire events that invoke matching handlers. Four trigger types are supported:
 
-  * ``object.finalize`` - fired when an object is written to storage.
-  * ``pubsub.publish``  - fired when a message is published to a topic.
+  * ``object.finalize``     - fired when an object is written to storage.
+  * ``pubsub.publish``      - fired when a message is published to a topic.
+  * ``http``                - callable via an HTTP-style request dict.
+  * ``firestore.write``     - fired when a Firestore document is created/updated/deleted.
 
 Handlers receive an ``event`` dict (mirroring the CloudEvents-ish shape used by
 GCP background functions) and may return a value, which is captured.
@@ -29,7 +31,10 @@ class FunctionError(Exception):
 
 OBJECT_FINALIZE = "object.finalize"
 PUBSUB_PUBLISH = "pubsub.publish"
-_VALID_TRIGGERS = {OBJECT_FINALIZE, PUBSUB_PUBLISH}
+HTTP_TRIGGER = "http"
+FIRESTORE_WRITE = "firestore.write"
+
+_VALID_TRIGGERS = {OBJECT_FINALIZE, PUBSUB_PUBLISH, HTTP_TRIGGER, FIRESTORE_WRITE}
 
 
 @dataclass
@@ -48,7 +53,7 @@ class _Function:
     name: str
     trigger: str
     handler: Callable[[dict], Any]
-    resource: Optional[str]  # bucket name or topic name; None = all
+    resource: Optional[str]  # bucket name, topic name, collection; None = all
 
 
 class FunctionRunner:
@@ -133,6 +138,47 @@ class FunctionRunner:
             "timeCreated": time.time(),
         }
         return self._dispatch(PUBSUB_PUBLISH, topic, event)
+
+    def fire_http(self, function_name: str, request: dict) -> Optional[Invocation]:
+        """Invoke a single named HTTP-triggered function with a request dict.
+
+        ``request`` shape: {method, path, headers, body, queryParams}
+
+        Returns the :class:`Invocation` record or None if the function is not
+        registered with an ``http`` trigger.
+        """
+        with self._lock:
+            fn = self._functions.get(function_name)
+        if fn is None or fn.trigger != HTTP_TRIGGER:
+            return None
+        try:
+            res = fn.handler(request)
+            inv = Invocation(fn.name, HTTP_TRIGGER, function_name, True, result=res)
+        except Exception as exc:
+            inv = Invocation(fn.name, HTTP_TRIGGER, function_name, False,
+                             error=f"{exc}\n{traceback.format_exc()}")
+        with self._lock:
+            self._log.append(inv)
+        return inv
+
+    def fire_firestore_write(self, collection: str, doc_id: str,
+                             operation: str, data: dict,
+                             old_data: Optional[dict] = None) -> List[Invocation]:
+        """Fire a firestore.write event for a collection document change.
+
+        ``operation`` is one of 'CREATE', 'UPDATE', 'DELETE'.
+        ``resource`` matching uses the collection name.
+        """
+        event = {
+            "eventType": FIRESTORE_WRITE,
+            "collection": collection,
+            "docId": doc_id,
+            "operation": operation,
+            "data": data,
+            "oldData": old_data,
+            "timeCreated": time.time(),
+        }
+        return self._dispatch(FIRESTORE_WRITE, collection, event)
 
     # hook used by PubSub.publish
     def _on_publish(self, topic: str, message) -> None:

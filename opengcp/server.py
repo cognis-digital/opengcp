@@ -30,15 +30,20 @@ Path layout (all JSON unless noted):
     POST   /pubsub/topics/<topic>                    create topic
     GET    /pubsub/topics                            list topics
     DELETE /pubsub/topics/<topic>                    delete topic
-    POST   /pubsub/topics/<topic>/publish            publish (json body)
-    POST   /pubsub/subscriptions/<name>?topic=...    create subscription
+    POST   /pubsub/topics/<topic>/publish            publish (json body; orderingKey optional)
+    POST   /pubsub/subscriptions/<name>?topic=...    create subscription (?ackDeadline= ?deadLetterTopic= ?maxDeliveryAttempts=)
     GET    /pubsub/subscriptions                     list subscriptions
+    GET    /pubsub/subscriptions/<name>              subscription stats
+    DELETE /pubsub/subscriptions/<name>              delete subscription
     POST   /pubsub/subscriptions/<name>/pull         pull (?max=)
     POST   /pubsub/subscriptions/<name>/ack          ack (json {ackIds:[]})
+    POST   /pubsub/subscriptions/<name>/nack         nack (json {ackIds:[]})
+    POST   /pubsub/subscriptions/<name>/modifyAckDeadline  (json {ackId, seconds})
 
   Functions style
     GET    /functions                                list registered functions
     GET    /functions/invocations                    invocation log
+    POST   /functions/<name>/invoke                  invoke HTTP-triggered function
 
   Datastore style
     GET    /datastore/kinds                          list kinds
@@ -74,6 +79,37 @@ Path layout (all JSON unless noted):
     POST   /bigquery/datasets/<ds>/tables/<tbl>/insertAll  streaming insert (json body)
     POST   /bigquery/query                           run query (json body: {query})
 
+  Cloud Tasks style
+    POST   /tasks/queues/<queue>                     create queue (json body: retryConfig, rateLimits)
+    GET    /tasks/queues                             list queues
+    GET    /tasks/queues/<queue>                     get queue
+    DELETE /tasks/queues/<queue>                     delete queue
+    POST   /tasks/queues/<queue>/pause               pause queue
+    POST   /tasks/queues/<queue>/resume              resume queue
+    POST   /tasks/queues/<queue>/purge               purge all tasks
+    POST   /tasks/queues/<queue>/tasks               create task (json body)
+    GET    /tasks/queues/<queue>/tasks               list tasks
+    GET    /tasks/queues/<queue>/tasks/<task>        get task
+    DELETE /tasks/queues/<queue>/tasks/<task>        delete task
+
+  Cloud Scheduler style
+    POST   /scheduler/jobs                           create job (json body: name, schedule, description)
+    GET    /scheduler/jobs                           list jobs
+    GET    /scheduler/jobs/<job>                     get job
+    DELETE /scheduler/jobs/<job>                     delete job
+    POST   /scheduler/jobs/<job>/pause               pause job
+    POST   /scheduler/jobs/<job>/resume              resume job
+    POST   /scheduler/jobs/<job>/run                 run job now
+    GET    /scheduler/jobs/<job>/history             execution history
+
+  Cloud Run style
+    POST   /cloudrun/services/<name>                 deploy service (handler registered in-process)
+    GET    /cloudrun/services                        list services
+    GET    /cloudrun/services/<name>                 get service
+    DELETE /cloudrun/services/<name>                 delete service
+    POST   /cloudrun/services/<name>/invoke          invoke service (raw body forwarded)
+    GET    /cloudrun/services/<name>/invocations     invocation log
+
   Misc
     GET    /healthz                                  liveness probe
 """
@@ -92,13 +128,19 @@ from . import pubsub as pubsub_mod
 from . import datastore as datastore_mod
 from . import bigtable as bigtable_mod
 from . import bigquery as bigquery_mod
+from . import tasks as tasks_mod
+from . import scheduler as scheduler_mod
+from . import cloudrun as cloudrun_mod
 from .storage import ObjectStorage
 from .firestore import DocumentStore
-from .pubsub import PubSub
+from .pubsub import PubSub, DeadLetterPolicy
 from .functions import FunctionRunner
 from .datastore import DatastoreDB, Key as DSKey
 from .bigtable import BigtableAdmin, SetCell, DeleteCell, DeleteFromFamily, DeleteFromRow
 from .bigquery import BigQueryDB
+from .tasks import CloudTasks
+from .scheduler import CloudScheduler
+from .cloudrun import CloudRun
 
 
 class Services:
@@ -120,6 +162,9 @@ class Services:
         self.pubsub = PubSub()
         self.functions = FunctionRunner(storage=self.storage, pubsub=self.pubsub)
         self.bigtable = BigtableAdmin()
+        self.tasks = CloudTasks()
+        self.scheduler = CloudScheduler()
+        self.cloudrun = CloudRun()
 
 
 def _make_handler(services: Services):
@@ -193,7 +238,9 @@ def _make_handler(services: Services):
                                                  "endpoints": ["/storage", "/firestore",
                                                                "/pubsub", "/functions",
                                                                "/datastore", "/bigtable",
-                                                               "/bigquery", "/healthz"]})
+                                                               "/bigquery", "/tasks",
+                                                               "/scheduler", "/cloudrun",
+                                                               "/healthz"]})
                 head = parts[0]
                 if head == "healthz":
                     return self._send_json(200, {"status": "ok"})
@@ -211,12 +258,21 @@ def _make_handler(services: Services):
                     return self._route_bigtable(method, parts[1:], query)
                 if head == "bigquery":
                     return self._route_bigquery(method, parts[1:], query)
+                if head == "tasks":
+                    return self._route_tasks(method, parts[1:], query)
+                if head == "scheduler":
+                    return self._route_scheduler(method, parts[1:], query)
+                if head == "cloudrun":
+                    return self._route_cloudrun(method, parts[1:], query)
                 return self._error(404, f"unknown service: {head}")
             except (storage_mod.StorageError, firestore_mod.FirestoreError,
                     pubsub_mod.PubSubError,
                     datastore_mod.DatastoreError,
                     bigtable_mod.BigtableError,
-                    bigquery_mod.BigQueryError) as exc:
+                    bigquery_mod.BigQueryError,
+                    tasks_mod.TasksError,
+                    scheduler_mod.SchedulerError,
+                    cloudrun_mod.CloudRunError) as exc:
                 code = 404 if "NotFound" in type(exc).__name__ else 409
                 return self._error(code, f"{type(exc).__name__}: {exc}")
             except (json.JSONDecodeError, KeyError, ValueError) as exc:
@@ -418,7 +474,9 @@ def _make_handler(services: Services):
                     if body.get("dataEncoding") == "base64":
                         data = base64.b64decode(data)
                     attrs = body.get("attributes", {})
-                    mid = ps.publish(topic, data, attributes=attrs)
+                    ordering_key = body.get("orderingKey", "")
+                    mid = ps.publish(topic, data, attributes=attrs,
+                                     ordering_key=ordering_key)
                     return self._send_json(200, {"messageId": mid})
                 return self._error(404, "bad topic route")
             if kind == "subscriptions":
@@ -434,7 +492,14 @@ def _make_handler(services: Services):
                         if not topic:
                             return self._error(400, "missing ?topic=")
                         ad = float(query.get("ackDeadline", ["10"])[0])
-                        ps.create_subscription(name, topic, ack_deadline=ad)
+                        dl_topic = query.get("deadLetterTopic", [None])[0]
+                        dl_max = int(query.get("maxDeliveryAttempts", ["5"])[0])
+                        dl_policy = (
+                            DeadLetterPolicy(dl_topic, dl_max)
+                            if dl_topic else None
+                        )
+                        ps.create_subscription(name, topic, ack_deadline=ad,
+                                               dead_letter_policy=dl_policy)
                         return self._send_json(200, {"subscription": name,
                                                      "topic": topic})
                     if method == "DELETE":
@@ -456,6 +521,12 @@ def _make_handler(services: Services):
                     body = self._json_body()
                     n = ps.nack(name, body.get("ackIds", []))
                     return self._send_json(200, {"nacked": n})
+                if action == "modifyAckDeadline" and method == "POST":
+                    body = self._json_body()
+                    ack_id = body.get("ackId", "")
+                    seconds = float(body.get("seconds", 10))
+                    ok = ps.modify_ack_deadline(name, ack_id, seconds)
+                    return self._send_json(200, {"modified": ok})
                 return self._error(404, "bad subscription route")
             return self._error(404, f"unknown pubsub kind: {kind}")
 
@@ -473,6 +544,32 @@ def _make_handler(services: Services):
                     {"function": i.function, "eventType": i.event_type,
                      "resource": i.resource, "ok": i.ok, "result": i.result,
                      "error": i.error, "timestamp": i.timestamp} for i in invs]})
+            # /functions/<name>/invoke  — HTTP-triggered function invocation
+            if len(p) == 2 and p[1] == "invoke" and method == "POST":
+                fn_name = p[0]
+                body = self._read_body()
+                request = {
+                    "method": method,
+                    "path": "/",
+                    "headers": dict(self.headers),
+                    "body": body,
+                    "queryParams": dict(query),
+                }
+                inv = fr.fire_http(fn_name, request)
+                if inv is None:
+                    return self._error(404, f"no HTTP function: {fn_name}")
+                result = inv.result
+                if isinstance(result, dict):
+                    status = result.get("status", 200)
+                    resp_body = result.get("body", b"")
+                    if isinstance(resp_body, str):
+                        resp_body = resp_body.encode("utf-8")
+                    ct = result.get("headers", {}).get("Content-Type",
+                                                       "application/json")
+                    return self._send_raw(status, resp_body, content_type=ct)
+                if inv.ok:
+                    return self._send_json(200, {"result": str(result) if result is not None else None})
+                return self._error(500, inv.error or "function error")
             return self._error(404, "bad functions route")
 
         # ----- datastore -----
@@ -709,6 +806,164 @@ def _make_handler(services: Services):
                 return self._error(405, method)
             return self._error(404, f"unknown bigquery action: {action}")
 
+        # ----- Cloud Tasks -----
+        def _route_tasks(self, method, p, query):
+            ct = services.tasks
+            if not p or p[0] != "queues":
+                return self._error(404, "expected /tasks/queues/...")
+            rest = p[1:]
+            if not rest:
+                if method == "GET":
+                    return self._send_json(200, {"queues": ct.list_queues()})
+                return self._error(405, method)
+            queue_name = rest[0]
+            rest2 = rest[1:]
+            if not rest2:
+                if method == "POST":
+                    body = self._json_body()
+                    from .tasks import RetryConfig, RateLimits
+                    import re as _re
+
+                    def _to_snake(name):
+                        return _re.sub(r'([A-Z])', lambda m: '_' + m.group(1).lower(), name)
+
+                    rc_data = {_to_snake(k): v
+                               for k, v in body.get("retryConfig", {}).items()}
+                    rl_data = {_to_snake(k): v
+                               for k, v in body.get("rateLimits", {}).items()}
+                    rc = RetryConfig(**{k: v for k, v in rc_data.items()
+                                       if k in RetryConfig.__dataclass_fields__}) if rc_data else None
+                    rl = RateLimits(**{k: v for k, v in rl_data.items()
+                                      if k in RateLimits.__dataclass_fields__}) if rl_data else None
+                    q = ct.create_queue(queue_name, retry_config=rc, rate_limits=rl)
+                    return self._send_json(200, q.to_dict())
+                if method == "GET":
+                    return self._send_json(200, ct.get_queue(queue_name).to_dict())
+                if method == "DELETE":
+                    ct.delete_queue(queue_name)
+                    return self._send_json(200, {"deleted": queue_name})
+                return self._error(405, method)
+            action_or_tasks = rest2[0]
+            if action_or_tasks == "pause" and method == "POST":
+                ct.pause_queue(queue_name)
+                return self._send_json(200, {"state": "PAUSED"})
+            if action_or_tasks == "resume" and method == "POST":
+                ct.resume_queue(queue_name)
+                return self._send_json(200, {"state": "RUNNING"})
+            if action_or_tasks == "purge" and method == "POST":
+                n = ct.purge_queue(queue_name)
+                return self._send_json(200, {"purged": n})
+            if action_or_tasks == "tasks":
+                rest3 = rest2[1:]
+                if not rest3:
+                    if method == "POST":
+                        body = self._json_body()
+                        raw_body = body.get("body", "")
+                        if isinstance(raw_body, str):
+                            raw_body = raw_body.encode("utf-8")
+                        t = ct.create_task(
+                            queue_name,
+                            url=body.get("url"),
+                            method=body.get("method", "POST"),
+                            headers=body.get("headers", {}),
+                            body=raw_body,
+                            schedule_time=body.get("scheduleTime"),
+                            name=body.get("name"),
+                        )
+                        return self._send_json(200, t.to_dict())
+                    if method == "GET":
+                        return self._send_json(200, {"tasks": ct.list_tasks(queue_name)})
+                    return self._error(405, method)
+                task_name = rest3[0]
+                if method == "GET":
+                    return self._send_json(200, ct.get_task(queue_name, task_name).to_dict())
+                if method == "DELETE":
+                    ct.delete_task(queue_name, task_name)
+                    return self._send_json(200, {"deleted": task_name})
+                return self._error(405, method)
+            return self._error(404, f"unknown tasks action: {action_or_tasks}")
+
+        # ----- Cloud Scheduler -----
+        def _route_scheduler(self, method, p, query):
+            sc = services.scheduler
+            if not p or p[0] != "jobs":
+                return self._error(404, "expected /scheduler/jobs/...")
+            rest = p[1:]
+            if not rest:
+                if method == "GET":
+                    return self._send_json(200, {"jobs": sc.list_jobs()})
+                if method == "POST":
+                    body = self._json_body()
+                    name = body.get("name")
+                    schedule = body.get("schedule")
+                    if not name or not schedule:
+                        return self._error(400, "missing name or schedule")
+                    job = sc.create_job(name, schedule,
+                                        description=body.get("description", ""))
+                    return self._send_json(200, job.to_dict())
+                return self._error(405, method)
+            job_name = rest[0]
+            rest2 = rest[1:]
+            if not rest2:
+                if method == "GET":
+                    return self._send_json(200, sc.get_job(job_name).to_dict())
+                if method == "DELETE":
+                    sc.delete_job(job_name)
+                    return self._send_json(200, {"deleted": job_name})
+                return self._error(405, method)
+            action = rest2[0]
+            if action == "pause" and method == "POST":
+                sc.pause_job(job_name)
+                return self._send_json(200, {"state": "PAUSED"})
+            if action == "resume" and method == "POST":
+                sc.resume_job(job_name)
+                return self._send_json(200, {"state": "ENABLED"})
+            if action == "run" and method == "POST":
+                sc.run_now(job_name)
+                return self._send_json(200, {"status": "dispatched"})
+            if action == "history" and method == "GET":
+                return self._send_json(200, {"history": sc.job_history(job_name)})
+            return self._error(404, f"unknown scheduler action: {action}")
+
+        # ----- Cloud Run -----
+        def _route_cloudrun(self, method, p, query):
+            cr = services.cloudrun
+            if not p or p[0] != "services":
+                return self._error(404, "expected /cloudrun/services/...")
+            rest = p[1:]
+            if not rest:
+                if method == "GET":
+                    return self._send_json(200, {"services": cr.list_services()})
+                return self._error(405, method)
+            svc_name = rest[0]
+            rest2 = rest[1:]
+            if not rest2:
+                if method == "GET":
+                    return self._send_json(200, cr.get_service(svc_name).to_dict())
+                if method == "DELETE":
+                    cr.delete_service(svc_name)
+                    return self._send_json(200, {"deleted": svc_name})
+                # POST to /cloudrun/services/<name> without sub-path = describe
+                return self._error(405, method)
+            action = rest2[0]
+            if action == "invoke" and method == "POST":
+                body = self._read_body()
+                ct_header = self.headers.get("Content-Type", "application/octet-stream")
+                resp = cr.invoke(
+                    svc_name,
+                    method="POST",
+                    path="/",
+                    headers={"Content-Type": ct_header},
+                    body=body,
+                    query_params=dict(query),
+                )
+                return self._send_raw(resp["status"], resp["body"],
+                                      content_type=resp.get("headers", {}).get(
+                                          "Content-Type", "application/octet-stream"))
+            if action == "invocations" and method == "GET":
+                return self._send_json(200, {"invocations": cr.invocations(svc_name)})
+            return self._error(404, f"unknown cloudrun action: {action}")
+
     return Handler
 
 
@@ -741,3 +996,12 @@ class OpenGCPServer:
         self.httpd.server_close()
         if self._thread:
             self._thread.join(timeout=5)
+        # stop background threads in the new services
+        try:
+            self.services.tasks.stop()
+        except Exception:
+            pass
+        try:
+            self.services.scheduler.stop()
+        except Exception:
+            pass
