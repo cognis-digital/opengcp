@@ -483,6 +483,12 @@ Not yet implemented (clearly out of scope for the current subset):
   authentication, phone number auth, anonymous sign-in, refresh tokens,
   session cookies, tenant management.
 
+## Interoperability
+
+`{}` composes with the 300+ tool Cognis suite — JSON in/out and a shared
+OpenAI-compatible `/v1` backbone. See **[INTEROP.md](INTEROP.md)** for the
+suite map, composition patterns, and reference stacks.
+
 ## License
 
 Released under the **Cognis Open Collaboration License (COCL) 1.0** — see
