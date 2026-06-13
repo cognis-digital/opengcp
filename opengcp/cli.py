@@ -1,15 +1,22 @@
 """Command-line interface for opengcp.
 
 Subcommands:
-  serve                          start the local HTTP server (all services)
-  storage mb <bucket>            make a bucket
-  storage cp <file> <b/name>     upload a file to <bucket>/<name>
-  storage cat <b/name>           print an object to stdout
-  storage ls <bucket> [prefix]   list objects
-  fs set <coll> <id> <json>      set a document
-  fs get <coll> <id>             get a document
-  pubsub publish <topic> <data>  publish a message
-  version                        print version
+  serve                                   start the local HTTP server (all services)
+  storage mb <bucket>                     make a bucket
+  storage cp <file> <b/name>              upload a file to <bucket>/<name>
+  storage cat <b/name>                    print an object to stdout
+  storage ls <bucket> [prefix]            list objects
+  fs set <coll> <id> <json>               set a document
+  fs get <coll> <id>                      get a document
+  pubsub publish <topic> <data>           publish a message
+  datastore put <kind> <json>             put an entity (auto-assigns id)
+  datastore get <kind> <id>               get an entity by id
+  datastore query <kind> [--gql <stmt>]   list a kind or run GQL
+  bq create-dataset <dataset>             create a BigQuery dataset
+  bq create-table <dataset>.<table> <schema_json>  create a table
+  bq insert <dataset>.<table> <json>      insert a row
+  bq query <sql>                          run a SELECT query
+  version                                 print version
 """
 
 from __future__ import annotations
@@ -33,7 +40,7 @@ def cmd_serve(args):
     server = OpenGCPServer(host=args.host, port=args.port, data_dir=args.data_dir)
     print(f"opengcp {__version__} listening on {server.base_url}")
     print(f"data dir: {args.data_dir or '(in-memory)'}")
-    print("services: storage, firestore, pubsub, functions")
+    print("services: storage, firestore, pubsub, functions, datastore, bigtable, bigquery")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -71,7 +78,7 @@ def cmd_storage(args):
         bucket, name = _split_path(args.target)
         sys.stdout.buffer.write(s.download(bucket, name))
     elif args.action == "ls":
-        items = s.list_objects(args.target, args.prefix or "")
+        items, _prefixes = s.list_objects(args.target, args.prefix or "")
         for m in items:
             print(f"{m.size:>10}  {m.name}")
     else:
@@ -105,6 +112,65 @@ def cmd_pubsub(args):
         print(f"published {mid}")
     else:
         raise SystemExit(f"unknown pubsub action: {args.action}")
+    return 0
+
+
+def cmd_datastore(args):
+    from .datastore import DatastoreDB, Key
+    svc = _services(args)
+    ds = svc.datastore
+    if args.action == "put":
+        data = json.loads(args.data)
+        key = ds.put(Key(args.kind), data)
+        print(f"put {args.kind}/{key.id}")
+    elif args.action == "get":
+        try:
+            eid = int(args.id)
+        except ValueError:
+            eid = args.id
+        data = ds.get(Key(args.kind, eid))
+        print(json.dumps(data, indent=2))
+    elif args.action == "query":
+        if args.gql:
+            rows = ds.gql(args.gql)
+        else:
+            rows = ds.list_kind(args.kind)
+        for key, data in rows:
+            print(f"{key}: {json.dumps(data)}")
+    else:
+        raise SystemExit(f"unknown datastore action: {args.action}")
+    return 0
+
+
+def cmd_bq(args):
+    from .bigquery import BigQueryDB
+    svc = _services(args)
+    bq = svc.bigquery
+    if args.action == "create-dataset":
+        bq.create_dataset(args.dataset)
+        print(f"created dataset {args.dataset}")
+    elif args.action == "create-table":
+        ref = args.table_ref
+        if "." not in ref:
+            raise SystemExit("table_ref must be <dataset>.<table>")
+        ds_id, tbl_id = ref.split(".", 1)
+        schema = json.loads(args.schema)
+        bq.create_table(ds_id, tbl_id, schema)
+        print(f"created table {ds_id}.{tbl_id}")
+    elif args.action == "insert":
+        ref = args.table_ref
+        if "." not in ref:
+            raise SystemExit("table_ref must be <dataset>.<table>")
+        ds_id, tbl_id = ref.split(".", 1)
+        row = json.loads(args.row_json)
+        bq.insert_all(ds_id, tbl_id, [{"json": row}])
+        print(f"inserted 1 row into {ds_id}.{tbl_id}")
+    elif args.action == "query":
+        rows = bq.query(args.sql)
+        for r in rows:
+            print(json.dumps(r))
+    else:
+        raise SystemExit(f"unknown bq action: {args.action}")
     return 0
 
 
@@ -145,6 +211,23 @@ def build_parser():
     pb.add_argument("topic")
     pb.add_argument("data")
     pb.set_defaults(func=cmd_pubsub)
+
+    dst = sub.add_parser("datastore", help="Cloud Datastore-style entity commands")
+    dst.add_argument("action", choices=["put", "get", "query"])
+    dst.add_argument("kind")
+    dst.add_argument("id", nargs="?")
+    dst.add_argument("data", nargs="?")
+    dst.add_argument("--gql", default=None, help="GQL query string for 'query' action")
+    dst.set_defaults(func=cmd_datastore)
+
+    bq = sub.add_parser("bq", help="BigQuery-lite commands")
+    bq.add_argument("action", choices=["create-dataset", "create-table", "insert", "query"])
+    bq.add_argument("dataset", nargs="?")
+    bq.add_argument("table_ref", nargs="?", metavar="dataset.table")
+    bq.add_argument("schema", nargs="?", help="JSON schema array for create-table")
+    bq.add_argument("row_json", nargs="?", metavar="row_json", help="JSON row for insert")
+    bq.add_argument("sql", nargs="?", help="SQL for query action")
+    bq.set_defaults(func=cmd_bq)
 
     ver = sub.add_parser("version", help="print version")
     ver.set_defaults(func=cmd_version)

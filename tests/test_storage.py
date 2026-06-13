@@ -59,9 +59,11 @@ def test_list_objects_prefix():
     s.upload("b", "a/1", b"x")
     s.upload("b", "a/2", b"x")
     s.upload("b", "b/1", b"x")
-    names = [m.name for m in s.list_objects("b", prefix="a/")]
+    items, _ = s.list_objects("b", prefix="a/")
+    names = [m.name for m in items]
     assert names == ["a/1", "a/2"]
-    assert len(s.list_objects("b")) == 3
+    all_items, _ = s.list_objects("b")
+    assert len(all_items) == 3
 
 
 def test_delete_object():

@@ -84,33 +84,42 @@ opengcp/
   firestore.py   # document database          (SQLite or in-memory)
   pubsub.py      # publish/subscribe broker   (in-process)
   functions.py   # event-driven function runner
+  datastore.py   # Datastore-style entity store (SQLite or in-memory)
+  bigtable.py    # Bigtable-lite (instances/tables/column-families/rows, in-memory)
+  bigquery.py    # BigQuery-lite (datasets/tables/insertAll/SELECT, SQLite or in-memory)
   server.py      # one http.server exposing all services under path prefixes
   cli.py         # console entry point: `opengcp serve` + convenience commands
   __main__.py    # `python -m opengcp`
 ```
 
 Each service is a self-contained, thread-safe Python class you can import and
-use directly (`from opengcp import ObjectStorage, DocumentStore, PubSub,
-FunctionRunner`). The server simply wires the four together and maps HTTP
-routes onto them. Storage and Firestore persist under a local **data dir**
-(`--data-dir`); with no data dir everything runs **in-memory** (ideal for
-tests). The function runner auto-wires to storage and pub/sub so that writing
-an object or publishing a message can trigger your registered handlers.
+use directly. The server wires all seven together and maps HTTP routes onto
+them. Storage, Firestore, Datastore, and BigQuery persist under a local
+**data dir** (`--data-dir`); with no data dir everything runs **in-memory**
+(ideal for tests). The function runner auto-wires to storage and pub/sub so
+that writing an object or publishing a message can trigger your registered
+handlers.
 
 ## Services
 
-| Service          | Module          | Models a la            | Backend            | Path prefix   |
-|------------------|-----------------|------------------------|--------------------|---------------|
-| Object storage   | `storage.py`    | Cloud Storage (GCS)    | local files / RAM  | `/storage`    |
-| Document DB      | `firestore.py`  | Firestore              | SQLite / RAM       | `/firestore`  |
-| Pub/Sub broker   | `pubsub.py`     | Cloud Pub/Sub          | in-process queues  | `/pubsub`     |
-| Function runner  | `functions.py`  | Cloud Functions        | in-process         | `/functions`  |
+| Service          | Module          | Models a la            | Backend             | Path prefix    |
+|------------------|-----------------|------------------------|---------------------|----------------|
+| Object storage   | `storage.py`    | Cloud Storage (GCS)    | local files / RAM   | `/storage`     |
+| Document DB      | `firestore.py`  | Firestore              | SQLite / RAM        | `/firestore`   |
+| Pub/Sub broker   | `pubsub.py`     | Cloud Pub/Sub          | in-process queues   | `/pubsub`      |
+| Function runner  | `functions.py`  | Cloud Functions        | in-process          | `/functions`   |
+| Entity store     | `datastore.py`  | Cloud Datastore        | SQLite / RAM        | `/datastore`   |
+| Wide-column DB   | `bigtable.py`   | Cloud Bigtable         | in-process / RAM    | `/bigtable`    |
+| Analytical DB    | `bigquery.py`   | BigQuery               | SQLite / RAM        | `/bigquery`    |
 
 What each implements (a compatible **subset**):
 
-- **Object storage** — create/get/delete buckets; upload/download/stat/list/
-  delete objects; object names may contain `/`; per-object md5, size,
-  content-type, and generation (bumped on overwrite). Path-traversal-safe keys.
+- **Object storage** — create/get/delete buckets (with versioning enable/disable
+  and lifecycle rules stub); upload/download/stat/list/delete objects; custom
+  user metadata; server-side copy (`copy_object`); compose (concatenate up to 32
+  sources); `list_objects` with `prefix` and `delimiter` for simulated directory
+  listing; object versioning (soft-delete to noncurrent, versioned download by
+  generation, `delete_version`). Path-traversal-safe keys.
 - **Document DB** — collections of JSON documents; create (auto or explicit
   id), get, set (replace), update (merge), delete, list, list collections, and
   field queries with `== != < <= > >=` plus an optional `limit`.
@@ -122,6 +131,25 @@ What each implements (a compatible **subset**):
   / topic); events dispatch synchronously, capture results and errors, and are
   recorded in an invocation log. Auto-fired by real storage writes and
   publishes.
+- **Entity store (Datastore-lite)** — entities with (kind, id) keys (integer or
+  string ids; auto-assigned integer ids on `put`); put/get/delete; list all
+  entities of a kind; programmatic `query()` with `== != < <= > >=`
+  conditions, `ORDER BY`, and `LIMIT`; GQL-lite `gql()` supporting
+  `SELECT * FROM Kind [WHERE ... [AND ...]] [ORDER BY ... [ASC|DESC]] [LIMIT n]`
+  with string and numeric literals. Backed by SQLite for persistence.
+- **Bigtable-lite** — instances, tables, and column families (with optional
+  `max_versions` GC rule — older cells pruned on each write); `mutate_row`
+  applies a list of mutations (SetCell, DeleteCell, DeleteFromFamily,
+  DeleteFromRow) atomically; `read_row` with optional family filter; `scan_rows`
+  by key prefix or `[start, end)` range with limit; `read_column` for
+  projection. In-memory only (no disk persistence).
+- **BigQuery-lite** — datasets and tables with declared schema (advisory);
+  `insert_all` streaming inserts (list of `{insertId, json}` rows); full
+  SQL-lite `query()` supporting `SELECT *` or projected columns,
+  `FROM dataset.table`, `WHERE col op val [AND ...]` (ops: `= != < <= > >= LIKE`
+  with `%` wildcard), `GROUP BY col` with `COUNT(*)`, `SUM(col)`, `AVG(col)`,
+  `MIN(col)`, `MAX(col)` aggregates, `ORDER BY col [ASC|DESC]`, `LIMIT n`.
+  Backed by SQLite for persistence.
 
 ## Quickstart
 
@@ -157,11 +185,23 @@ Or use the library directly:
 
 ```python
 from opengcp import ObjectStorage, DocumentStore, PubSub, FunctionRunner
+from opengcp import DatastoreDB, DSKey, BigtableAdmin, BigQueryDB
+from opengcp.bigtable import SetCell
 
 storage = ObjectStorage()                 # in-memory
 storage.create_bucket("uploads")
 storage.upload("uploads", "a.txt", b"hello")
 assert storage.download("uploads", "a.txt") == b"hello"
+
+# versioning
+storage.create_bucket("versioned", versioning_enabled=True)
+storage.upload("versioned", "k", b"v1")
+storage.upload("versioned", "k", b"v2")
+assert storage.download("versioned", "k", generation=1) == b"v1"
+
+# copy + compose
+storage.copy_object("uploads", "a.txt", "uploads", "copy.txt")
+storage.compose("uploads", "joined.txt", ["a.txt", "copy.txt"])
 
 db = DocumentStore()                       # in-memory SQLite
 db.set("users", "u1", {"name": "ada"})
@@ -173,6 +213,32 @@ ps.create_topic("orders"); ps.create_subscription("w", "orders")
 fns.register("on_order", "pubsub.publish", lambda e: print("got", e["data"]),
              resource="orders")
 ps.publish("orders", b"new-order")         # prints: got b'new-order'
+
+# Datastore
+ds = DatastoreDB()
+key = ds.put(DSKey("Person"), {"name": "ada", "age": 36})
+print(ds.get(key))                         # -> {"name": "ada", "age": 36}
+results = ds.gql("SELECT * FROM Person WHERE age > 30")
+
+# Bigtable
+bt = BigtableAdmin()
+inst = bt.create_instance("prod")
+tbl = inst.create_table("users")
+tbl.create_column_family("info", max_versions=3)
+tbl.mutate_row("user#1", [SetCell("info", "name", b"ada")])
+print(tbl.read_row("user#1"))
+print(tbl.scan_rows(prefix="user#"))
+
+# BigQuery
+bq = BigQueryDB()
+bq.create_dataset("analytics")
+bq.create_table("analytics", "events", [{"name": "ts", "type": "INTEGER"},
+                                          {"name": "event", "type": "STRING"}])
+bq.insert_all("analytics", "events", [
+    {"json": {"ts": 1, "event": "click"}},
+    {"json": {"ts": 2, "event": "view"}},
+])
+rows = bq.query("SELECT COUNT(*), event FROM analytics.events GROUP BY event")
 ```
 
 Convenience CLI subcommands:
@@ -185,6 +251,12 @@ opengcp storage cat mybucket/photo.jpg > out.jpg
 opengcp fs set users u1 '{"name":"ada"}'
 opengcp fs get users u1
 opengcp pubsub publish events "hello"
+opengcp datastore put Person '{"name":"ada","age":36}'
+opengcp datastore query Person --gql "SELECT * FROM Person WHERE age > 30"
+opengcp bq create-dataset analytics
+opengcp bq create-table analytics.events '[{"name":"ts","type":"INTEGER"},{"name":"event","type":"STRING"}]'
+opengcp bq insert analytics.events '{"ts":1,"event":"click"}'
+opengcp bq query "SELECT COUNT(*) FROM analytics.events"
 ```
 
 <!-- cognis:domains:start -->
@@ -257,9 +329,10 @@ This repository ships a real, end-to-end pytest suite that round-trips data
 through every service — both by calling the service classes directly and by
 driving the actual HTTP server in-process.
 
-- **59 tests, all passing** (`python -m pytest -q` → `59 passed`).
-- Coverage by area: object storage (11), document DB (14), pub/sub (11),
-  function runner (10), HTTP server end-to-end (10), CLI (4).
+- **149 tests, all passing** (`python -m pytest -q` → `149 passed`).
+- Coverage by area: object storage (11 original + 20 extended), document DB (14),
+  pub/sub (11), function runner (10), HTTP server end-to-end (10), CLI (4),
+  Datastore (17), Bigtable (19), BigQuery (33).
 - CI runs the same suite on **ubuntu / macos / windows × Python 3.10–3.13**
   (see `.github/workflows/ci.yml`).
 
@@ -280,14 +353,23 @@ python -m pytest -q
 
 Not yet implemented (clearly out of scope for the current subset):
 
-- Signed URLs, resumable/multipart uploads, and object versioning history.
-- Firestore composite indexes, transactions, `array-contains` / `in`
+- **Cloud Storage:** Signed URLs, resumable/multipart uploads, object lock /
+  retention policies, object ACLs, bucket notifications, HMAC keys.
+- **Firestore:** composite indexes, transactions, `array-contains` / `in`
   operators, and sub-collections.
-- Pub/Sub push delivery, ordering keys, dead-letter topics, and message
-  retention policies.
-- HTTP-triggered Cloud Functions and a remote function deployment model
-  (current runner handles `object.finalize` and `pubsub.publish` in-process).
-- Authentication / IAM emulation.
+- **Pub/Sub:** push delivery, ordering keys, dead-letter topics, message
+  retention policies, and snapshot/seek.
+- **Cloud Functions:** HTTP-triggered functions and a remote function deployment
+  model (current runner handles `object.finalize` and `pubsub.publish`
+  in-process only).
+- **Datastore:** ancestor queries / entity groups, projections, multi-property
+  ORDER BY, cursor-based pagination.
+- **Bigtable:** disk persistence; server-side filters (row-range,
+  column-qualifier, value-range, condition); read-modify-write
+  (CheckAndMutate); replication.
+- **BigQuery:** DML (INSERT/UPDATE/DELETE), streaming buffer flush, table
+  partitioning, views, table export, job API, external tables.
+- **Authentication / IAM emulation** across all services.
 
 ## License
 
