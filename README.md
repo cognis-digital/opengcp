@@ -80,42 +80,56 @@ server that exposes all of them, and a CLI:
 
 ```
 opengcp/
-  storage.py     # GCS-style object storage  (local-FS or in-memory)
-  firestore.py   # document database          (SQLite or in-memory)
-  pubsub.py      # publish/subscribe broker   (in-process)
-  functions.py   # event-driven function runner (http + pubsub + storage + firestore triggers)
-  datastore.py   # Datastore-style entity store (SQLite or in-memory)
-  bigtable.py    # Bigtable-lite (instances/tables/column-families/rows, in-memory)
-  bigquery.py    # BigQuery-lite (datasets/tables/insertAll/SELECT, SQLite or in-memory)
-  tasks.py       # Cloud Tasks-lite (queues, scheduled tasks, dispatcher)
-  scheduler.py   # Cloud Scheduler-lite (cron jobs, run_now, history)
-  cloudrun.py    # Cloud Run-lite (deploy Python handler as service, invoke over HTTP)
-  server.py      # one http.server exposing all services under path prefixes
-  cli.py         # console entry point: `opengcp serve` + convenience commands
-  __main__.py    # `python -m opengcp`
+  storage.py            # GCS-style object storage  (local-FS or in-memory)
+  firestore.py          # document database          (SQLite or in-memory)
+  pubsub.py             # publish/subscribe broker   (in-process)
+  functions.py          # event-driven function runner (http + pubsub + storage + firestore triggers)
+  datastore.py          # Datastore-style entity store (SQLite or in-memory)
+  bigtable.py           # Bigtable-lite (instances/tables/column-families/rows, in-memory)
+  bigquery.py           # BigQuery-lite (datasets/tables/insertAll/SELECT, SQLite or in-memory)
+  tasks.py              # Cloud Tasks-lite (queues, scheduled tasks, dispatcher)
+  scheduler.py          # Cloud Scheduler-lite (cron jobs, run_now, history)
+  cloudrun.py           # Cloud Run-lite (deploy Python handler as service, invoke over HTTP)
+  iam.py                # Cloud IAM (roles, policy bindings, testIamPermissions)
+  secretmanager.py      # Secret Manager (secrets + versions + access + state machine)
+  kms.py                # Cloud KMS (key rings/keys, encrypt/decrypt, generateDataKey)
+  logging_service.py    # Cloud Logging (write/list/filter log entries, tail, delete)
+  monitoring.py         # Cloud Monitoring (metric descriptors, time-series, alignment)
+  identityplatform.py   # Identity Platform Auth (sign-up/sign-in, ID tokens, user mgmt)
+  server.py             # one http.server exposing all services under path prefixes
+  cli.py                # console entry point: `opengcp serve` + convenience commands
+  __main__.py           # `python -m opengcp`
 ```
 
 Each service is a self-contained, thread-safe Python class you can import and
-use directly. The server wires all ten together and maps HTTP routes onto them.
-Storage, Firestore, Datastore, and BigQuery persist under a local **data dir**
+use directly. The server wires all sixteen together and maps HTTP routes onto
+them. Storage, Firestore, Datastore, BigQuery, IAM, Secret Manager, Logging,
+Monitoring, and Identity Platform persist under a local **data dir**
 (`--data-dir`); with no data dir everything runs **in-memory** (ideal for
-tests). The function runner auto-wires to storage and pub/sub so that writing
-an object or publishing a message can trigger your registered handlers.
+tests). KMS is always in-memory. The function runner auto-wires to storage and
+pub/sub so that writing an object or publishing a message can trigger your
+registered handlers.
 
 ## Services
 
-| Service          | Module          | Models a la            | Backend             | Path prefix    |
-|------------------|-----------------|------------------------|---------------------|----------------|
-| Object storage   | `storage.py`    | Cloud Storage (GCS)    | local files / RAM   | `/storage`     |
-| Document DB      | `firestore.py`  | Firestore              | SQLite / RAM        | `/firestore`   |
-| Pub/Sub broker   | `pubsub.py`     | Cloud Pub/Sub          | in-process queues   | `/pubsub`      |
-| Function runner  | `functions.py`  | Cloud Functions        | in-process          | `/functions`   |
-| Entity store     | `datastore.py`  | Cloud Datastore        | SQLite / RAM        | `/datastore`   |
-| Wide-column DB   | `bigtable.py`   | Cloud Bigtable         | in-process / RAM    | `/bigtable`    |
-| Analytical DB    | `bigquery.py`   | BigQuery               | SQLite / RAM        | `/bigquery`    |
-| Task queues      | `tasks.py`      | Cloud Tasks            | in-process          | `/tasks`       |
-| Cron jobs        | `scheduler.py`  | Cloud Scheduler        | in-process          | `/scheduler`   |
-| Service runner   | `cloudrun.py`   | Cloud Run              | in-process          | `/cloudrun`    |
+| Service              | Module                   | Models a la                  | Backend             | Path prefix           |
+|----------------------|--------------------------|------------------------------|---------------------|-----------------------|
+| Object storage       | `storage.py`             | Cloud Storage (GCS)          | local files / RAM   | `/storage`            |
+| Document DB          | `firestore.py`           | Firestore                    | SQLite / RAM        | `/firestore`          |
+| Pub/Sub broker       | `pubsub.py`              | Cloud Pub/Sub                | in-process queues   | `/pubsub`             |
+| Function runner      | `functions.py`           | Cloud Functions              | in-process          | `/functions`          |
+| Entity store         | `datastore.py`           | Cloud Datastore              | SQLite / RAM        | `/datastore`          |
+| Wide-column DB       | `bigtable.py`            | Cloud Bigtable               | in-process / RAM    | `/bigtable`           |
+| Analytical DB        | `bigquery.py`            | BigQuery                     | SQLite / RAM        | `/bigquery`           |
+| Task queues          | `tasks.py`               | Cloud Tasks                  | in-process          | `/tasks`              |
+| Cron jobs            | `scheduler.py`           | Cloud Scheduler              | in-process          | `/scheduler`          |
+| Service runner       | `cloudrun.py`            | Cloud Run                    | in-process          | `/cloudrun`           |
+| IAM                  | `iam.py`                 | Cloud IAM                    | SQLite / RAM        | `/iam`                |
+| Secret Manager       | `secretmanager.py`       | Secret Manager               | SQLite / RAM        | `/secretmanager`      |
+| Key Management       | `kms.py`                 | Cloud KMS                    | in-memory           | `/kms`                |
+| Structured Logging   | `logging_service.py`     | Cloud Logging                | SQLite / RAM        | `/logging`            |
+| Metrics              | `monitoring.py`          | Cloud Monitoring             | SQLite / RAM        | `/monitoring`         |
+| Auth / Identity      | `identityplatform.py`    | Identity Platform / Firebase | SQLite / RAM        | `/identityplatform`   |
 
 What each implements (a compatible **subset**):
 
@@ -184,6 +198,45 @@ What each implements (a compatible **subset**):
   timeout); per-service invocation log with latency and error capture; redeploy
   replaces the handler in-place; services exposed at
   `POST /cloudrun/services/<name>/invoke` over the HTTP server.
+- **Cloud IAM** — role registry (5 built-in predefined roles: viewer/editor/owner
+  and two service-specific; unlimited custom roles with arbitrary permission sets);
+  `getIamPolicy` / `setIamPolicy` per named resource (replaces full binding list);
+  `testIamPermissions` — returns the subset of requested permissions that a given
+  principal holds, resolving through all granted roles including `allUsers` /
+  `allAuthenticatedUsers` wildcards; create/update/soft-delete custom roles.
+  Backed by SQLite for persistence.
+- **Secret Manager** — create/get/list/delete named secrets with optional labels;
+  add secret versions (arbitrary binary payloads); access version payload by
+  number or `latest` alias; per-version state machine `ENABLED → DISABLED →
+  DESTROYED` (destroyed versions have their payload wiped); `latest` skips
+  destroyed versions. Backed by SQLite for persistence.
+- **Cloud KMS** — key rings and symmetric crypto keys; each key carries a
+  randomly-generated 32-byte master key; encrypt / decrypt via a stdlib
+  CTR-mode cipher (HMAC-SHA256 counter stream + integrity tag — opengcp-local
+  cipher, not AES; provides the same interface); optional
+  `additionalAuthenticatedData` bound to the ciphertext; `generateDataKey`
+  produces a random 32-byte DEK returned plaintext + wrapped (encrypted with the
+  KMS key). In-memory only.
+- **Cloud Logging** — write structured log entries (JSON or text payload) with
+  severity, labels, resource, and a log name; list/filter entries by log name,
+  minimum severity (DEFAULT/DEBUG/INFO/NOTICE/WARNING/ERROR/CRITICAL/ALERT/
+  EMERGENCY), and a simple AND-of-predicate `filter` expression (supports
+  `logName`, `severity`, and `labels.<key>`); `tail` returns the N most-recently
+  inserted entries; `delete_log` purges all entries for a log name. Backed by
+  SQLite for persistence.
+- **Cloud Monitoring** — metric descriptor registry (create/get/list/delete with
+  `valueType`, `metricKind`, `unit`, and label definitions); write time-series
+  data points (DOUBLE, INT64, or STRING values) for any metric type with resource
+  and metric labels; list time-series filtered by metric type and time range;
+  alignment reducers (ALIGN_MEAN / ALIGN_SUM / ALIGN_MIN / ALIGN_MAX) over a
+  configurable `alignment_period` in seconds. Backed by SQLite for persistence.
+- **Identity Platform Auth** — email+password sign-up (PBKDF2-HMAC-SHA256 with
+  random salt, 100 000 iterations) and sign-in returning a short-lived opengcp ID
+  token (HMAC-SHA256 signed header.payload.sig, 1-hour TTL); `verify_id_token`
+  checks the signature and expiry; `create_custom_token` for server-to-server
+  flows with optional extra claims; full user management — get / get-by-email /
+  list / update (display name, password, disabled) / delete; token expiry enforced.
+  Backed by SQLite for persistence.
 
 ## Quickstart
 
@@ -363,12 +416,15 @@ This repository ships a real, end-to-end pytest suite that round-trips data
 through every service — both by calling the service classes directly and by
 driving the actual HTTP server in-process.
 
-- **267 tests, all passing** (`python -m pytest -q` → `267 passed`).
+- **407 tests, all passing** (`python -m pytest -q` → `407 passed`).
 - Coverage by area: object storage (11 original + 20 extended), document DB (14),
   pub/sub (11 original + 16 extended), function runner (10 original + 16 extended),
   HTTP server end-to-end (10 original + 28 extended), CLI (4),
   Datastore (17), Bigtable (19), BigQuery (33),
-  Cloud Tasks (19), Cloud Scheduler (20), Cloud Run (20).
+  Cloud Tasks (19), Cloud Scheduler (20), Cloud Run (20),
+  IAM (18), Secret Manager (16), Cloud KMS (16),
+  Cloud Logging (15), Cloud Monitoring (16), Identity Platform Auth (23),
+  HTTP server identity+security+ops end-to-end (38).
 - CI runs the same suite on **ubuntu / macos / windows × Python 3.10–3.13**
   (see `.github/workflows/ci.yml`).
 
@@ -410,7 +466,22 @@ Not yet implemented (clearly out of scope for the current subset):
   Pub/Sub and HTTP target types (current: Python callable only).
 - **Cloud Run:** traffic-split / revision management, volume mounts, secrets,
   VPC connector emulation.
-- **Authentication / IAM emulation** across all services.
+- **IAM:** IAM conditions, organization/folder hierarchy, audit log, workload
+  identity federation, service account impersonation; IAM enforcement wired
+  into individual service requests (currently IAM is a standalone service —
+  not enforced at the storage/firestore/etc. layer).
+- **Secret Manager:** automatic secret rotation, customer-managed encryption
+  keys (CMEK), replication policies (per-region), secret annotations.
+- **Cloud KMS:** real AES-256 encryption (stdlib has no AES; current cipher is
+  opengcp-local HMAC-CTR), asymmetric key pairs, key import, key rotation,
+  audit logging, customer-supplied encryption keys (CSEK).
+- **Cloud Logging:** log sinks (export to storage/pubsub), log-based metrics,
+  `protoPayload`, exclusion filters, log buckets with retention policies.
+- **Cloud Monitoring:** alerting policies, notification channels, uptime checks,
+  dashboards, cross-project aggregation, MQL queries.
+- **Identity Platform:** OAuth/OIDC provider federation, multi-factor
+  authentication, phone number auth, anonymous sign-in, refresh tokens,
+  session cookies, tenant management.
 
 ## License
 

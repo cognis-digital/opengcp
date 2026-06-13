@@ -18,6 +18,68 @@ Path layout (all JSON unless noted):
     POST   /storage/b/<bucket>/o/<name...>/copy?dst=<b/n> server-side copy
     POST   /storage/b/<bucket>/o/<name...>/compose     compose (json {sources:[],contentType})
 
+  IAM
+    POST   /iam/roles/<roleId>                          create custom role (json body)
+    GET    /iam/roles                                   list roles
+    GET    /iam/roles/<roleId>                          get role
+    PATCH  /iam/roles/<roleId>                          update role
+    DELETE /iam/roles/<roleId>                          delete role
+    POST   /iam/resources/<name...>                     register resource (?type=)
+    GET    /iam/resources                               list resources
+    GET    /iam/<resource...>/policy                    getIamPolicy
+    POST   /iam/<resource...>/policy                    setIamPolicy (json body)
+    POST   /iam/<resource...>/testPermissions           testIamPermissions (json body)
+
+  Secret Manager
+    POST   /secretmanager/secrets/<id>                  create secret (json body: {labels})
+    GET    /secretmanager/secrets                       list secrets
+    GET    /secretmanager/secrets/<id>                  get secret
+    DELETE /secretmanager/secrets/<id>                  delete secret
+    POST   /secretmanager/secrets/<id>/versions         add version (raw body = payload)
+    GET    /secretmanager/secrets/<id>/versions         list versions
+    GET    /secretmanager/secrets/<id>/versions/<v>     get version metadata
+    GET    /secretmanager/secrets/<id>/versions/<v>:access  access (read) version payload
+    POST   /secretmanager/secrets/<id>/versions/<v>:disable  disable version
+    POST   /secretmanager/secrets/<id>/versions/<v>:enable   enable version
+    POST   /secretmanager/secrets/<id>/versions/<v>:destroy  destroy version
+
+  Cloud KMS
+    POST   /kms/keyrings/<kr>                           create key ring
+    GET    /kms/keyrings                                list key rings
+    GET    /kms/keyrings/<kr>                           get key ring
+    POST   /kms/keyrings/<kr>/keys/<key>                create crypto key (?purpose=)
+    GET    /kms/keyrings/<kr>/keys                      list crypto keys
+    GET    /kms/keyrings/<kr>/keys/<key>                get crypto key
+    GET    /kms/keyrings/<kr>/keys/<key>/versions       list key versions
+    POST   /kms/keyrings/<kr>/keys/<key>/encrypt        encrypt (json body: {plaintext, additionalAuthenticatedData})
+    POST   /kms/keyrings/<kr>/keys/<key>/decrypt        decrypt (json body: {ciphertext, additionalAuthenticatedData})
+    POST   /kms/keyrings/<kr>/keys/<key>/generateDataKey  generate DEK
+
+  Cloud Logging
+    POST   /logging/entries:write                       write log entries (json body: {entries, logName})
+    GET    /logging/entries                             list entries (?logName=&severityMin=&filter=&pageSize=)
+    GET    /logging/logs                                list log names
+    DELETE /logging/logs/<logName...>                   delete a log
+    GET    /logging/entries:tail                        tail recent entries (?n=)
+
+  Cloud Monitoring
+    POST   /monitoring/metricDescriptors                create metric descriptor
+    GET    /monitoring/metricDescriptors                list metric descriptors
+    GET    /monitoring/metricDescriptors/<type...>      get descriptor
+    DELETE /monitoring/metricDescriptors/<type...>      delete descriptor
+    POST   /monitoring/timeSeries                       write time-series
+    GET    /monitoring/timeSeries                       list time-series (?metricType=&startTime=&endTime=&aligner=&period=)
+
+  Identity Platform
+    POST   /identityplatform/accounts:signUp            sign-up (json body)
+    POST   /identityplatform/accounts:signIn            sign-in (json body)
+    POST   /identityplatform/accounts:verify            verify ID token (json body)
+    GET    /identityplatform/accounts/<uid>             get user
+    PATCH  /identityplatform/accounts/<uid>             update user
+    DELETE /identityplatform/accounts/<uid>             delete user
+    GET    /identityplatform/accounts                   list users
+    POST   /identityplatform/accounts/<uid>/customToken create custom token
+
   Firestore (document) style
     POST   /firestore/<collection>                   create doc (json body)
     GET    /firestore/<collection>                   list / query (?field&op&value)
@@ -131,6 +193,12 @@ from . import bigquery as bigquery_mod
 from . import tasks as tasks_mod
 from . import scheduler as scheduler_mod
 from . import cloudrun as cloudrun_mod
+from . import iam as iam_mod
+from . import secretmanager as secretmanager_mod
+from . import kms as kms_mod
+from . import logging_service as logging_mod
+from . import monitoring as monitoring_mod
+from . import identityplatform as identityplatform_mod
 from .storage import ObjectStorage
 from .firestore import DocumentStore
 from .pubsub import PubSub, DeadLetterPolicy
@@ -141,6 +209,12 @@ from .bigquery import BigQueryDB
 from .tasks import CloudTasks
 from .scheduler import CloudScheduler
 from .cloudrun import CloudRun
+from .iam import IAMService
+from .secretmanager import SecretManager
+from .kms import KMSService
+from .logging_service import LoggingService
+from .monitoring import MonitoringService
+from .identityplatform import IdentityPlatform
 
 
 class Services:
@@ -154,17 +228,31 @@ class Services:
             self.firestore = DocumentStore(path=os.path.join(data_dir, "firestore.db"))
             self.datastore = DatastoreDB(path=os.path.join(data_dir, "datastore.db"))
             self.bigquery = BigQueryDB(path=os.path.join(data_dir, "bigquery.db"))
+            self.iam = IAMService(path=os.path.join(data_dir, "iam.db"))
+            self.secretmanager = SecretManager(
+                path=os.path.join(data_dir, "secretmanager.db"))
+            self.logging = LoggingService(path=os.path.join(data_dir, "logging.db"))
+            self.monitoring = MonitoringService(
+                path=os.path.join(data_dir, "monitoring.db"))
+            self.identityplatform = IdentityPlatform(
+                path=os.path.join(data_dir, "identityplatform.db"))
         else:
             self.storage = ObjectStorage(root=None)
             self.firestore = DocumentStore(path=None)
             self.datastore = DatastoreDB(path=None)
             self.bigquery = BigQueryDB(path=None)
+            self.iam = IAMService()
+            self.secretmanager = SecretManager()
+            self.logging = LoggingService()
+            self.monitoring = MonitoringService()
+            self.identityplatform = IdentityPlatform()
         self.pubsub = PubSub()
         self.functions = FunctionRunner(storage=self.storage, pubsub=self.pubsub)
         self.bigtable = BigtableAdmin()
         self.tasks = CloudTasks()
         self.scheduler = CloudScheduler()
         self.cloudrun = CloudRun()
+        self.kms = KMSService()  # always in-memory
 
 
 def _make_handler(services: Services):
@@ -240,6 +328,10 @@ def _make_handler(services: Services):
                                                                "/datastore", "/bigtable",
                                                                "/bigquery", "/tasks",
                                                                "/scheduler", "/cloudrun",
+                                                               "/iam", "/secretmanager",
+                                                               "/kms", "/logging",
+                                                               "/monitoring",
+                                                               "/identityplatform",
                                                                "/healthz"]})
                 head = parts[0]
                 if head == "healthz":
@@ -264,6 +356,18 @@ def _make_handler(services: Services):
                     return self._route_scheduler(method, parts[1:], query)
                 if head == "cloudrun":
                     return self._route_cloudrun(method, parts[1:], query)
+                if head == "iam":
+                    return self._route_iam(method, parts[1:], query)
+                if head == "secretmanager":
+                    return self._route_secretmanager(method, parts[1:], query)
+                if head == "kms":
+                    return self._route_kms(method, parts[1:], query)
+                if head == "logging":
+                    return self._route_logging(method, parts[1:], query)
+                if head == "monitoring":
+                    return self._route_monitoring(method, parts[1:], query)
+                if head == "identityplatform":
+                    return self._route_identityplatform(method, parts[1:], query)
                 return self._error(404, f"unknown service: {head}")
             except (storage_mod.StorageError, firestore_mod.FirestoreError,
                     pubsub_mod.PubSubError,
@@ -272,7 +376,13 @@ def _make_handler(services: Services):
                     bigquery_mod.BigQueryError,
                     tasks_mod.TasksError,
                     scheduler_mod.SchedulerError,
-                    cloudrun_mod.CloudRunError) as exc:
+                    cloudrun_mod.CloudRunError,
+                    iam_mod.IAMError,
+                    secretmanager_mod.SecretManagerError,
+                    kms_mod.KMSError,
+                    logging_mod.LoggingError,
+                    monitoring_mod.MonitoringError,
+                    identityplatform_mod.AuthError) as exc:
                 code = 404 if "NotFound" in type(exc).__name__ else 409
                 return self._error(code, f"{type(exc).__name__}: {exc}")
             except (json.JSONDecodeError, KeyError, ValueError) as exc:
@@ -963,6 +1073,436 @@ def _make_handler(services: Services):
             if action == "invocations" and method == "GET":
                 return self._send_json(200, {"invocations": cr.invocations(svc_name)})
             return self._error(404, f"unknown cloudrun action: {action}")
+
+        # ----- IAM -----
+        def _route_iam(self, method, p, query):
+            iam = services.iam
+            if not p:
+                return self._error(404, "expected /iam/...")
+            section = p[0]
+            rest = p[1:]
+
+            if section == "roles":
+                if not rest:
+                    if method == "GET":
+                        return self._send_json(200, {"roles": iam.list_roles()})
+                    return self._error(405, method)
+                # role_id may contain slashes (e.g. "roles/myapp.reader")
+                role_id = "/".join(rest)
+                if method == "POST":
+                    body = self._json_body()
+                    role = iam.create_role(
+                        role_id,
+                        title=body.get("title", ""),
+                        description=body.get("description", ""),
+                        permissions=body.get("permissions", []),
+                        stage=body.get("stage", "ALPHA"),
+                    )
+                    return self._send_json(200, role)
+                if method == "GET":
+                    return self._send_json(200, iam.get_role(role_id))
+                if method == "PATCH":
+                    body = self._json_body()
+                    role = iam.update_role(
+                        role_id,
+                        title=body.get("title"),
+                        description=body.get("description"),
+                        permissions=body.get("permissions"),
+                    )
+                    return self._send_json(200, role)
+                if method == "DELETE":
+                    iam.delete_role(role_id)
+                    return self._send_json(200, {"deleted": role_id})
+                return self._error(405, method)
+
+            if section == "resources":
+                if not rest:
+                    if method == "GET":
+                        return self._send_json(200,
+                                               {"resources": iam.list_resources()})
+                    return self._error(405, method)
+                # /iam/resources/<name...>  POST = register
+                resource_name = "/".join(rest)
+                if method == "POST":
+                    rtype = query.get("type", ["generic"])[0]
+                    return self._send_json(200,
+                                           iam.register_resource(resource_name, rtype))
+                return self._error(405, method)
+
+            # /iam/<resource...>/policy  or  /iam/<resource...>/testPermissions
+            # The resource path is everything up to the last segment
+            if rest and rest[-1] in ("policy", "testPermissions"):
+                action = rest[-1]
+                resource = "/".join([section] + list(rest[:-1]))
+                if action == "policy":
+                    if method == "GET":
+                        return self._send_json(200, iam.get_iam_policy(resource))
+                    if method == "POST":
+                        body = self._json_body()
+                        bindings = body.get("bindings", [])
+                        return self._send_json(200,
+                                               iam.set_iam_policy(resource, bindings))
+                    return self._error(405, method)
+                if action == "testPermissions" and method == "POST":
+                    body = self._json_body()
+                    principal = body.get("principal", "")
+                    permissions = body.get("permissions", [])
+                    allowed = iam.test_iam_permissions(resource, principal,
+                                                       permissions)
+                    return self._send_json(200, {"permissions": allowed})
+                return self._error(404, "bad IAM route")
+            # no sub-action — treat as /iam/<resource...>/policy GET shortcut
+            resource = "/".join([section] + list(rest))
+            if method == "GET":
+                return self._send_json(200, iam.get_iam_policy(resource))
+            return self._error(404, f"unknown IAM route")
+
+        # ----- Secret Manager -----
+        def _route_secretmanager(self, method, p, query):
+            sm = services.secretmanager
+            if not p or p[0] != "secrets":
+                return self._error(404, "expected /secretmanager/secrets/...")
+            rest = p[1:]
+            if not rest:
+                if method == "GET":
+                    return self._send_json(200, {"secrets": sm.list_secrets()})
+                return self._error(405, method)
+            secret_id = rest[0]
+            rest2 = rest[1:]
+            if not rest2:
+                if method == "POST":
+                    body = self._json_body()
+                    secret = sm.create_secret(
+                        secret_id, labels=body.get("labels"))
+                    return self._send_json(200, secret)
+                if method == "GET":
+                    return self._send_json(200, sm.get_secret(secret_id))
+                if method == "DELETE":
+                    sm.delete_secret(secret_id)
+                    return self._send_json(200, {"deleted": secret_id})
+                return self._error(405, method)
+            if rest2[0] != "versions":
+                return self._error(404, "expected /secretmanager/secrets/<id>/versions/...")
+            rest3 = rest2[1:]
+            if not rest3:
+                if method == "POST":
+                    payload = self._read_body()
+                    ver = sm.add_version(secret_id, payload)
+                    return self._send_json(200, ver)
+                if method == "GET":
+                    return self._send_json(200,
+                                           {"versions": sm.list_versions(secret_id)})
+                return self._error(405, method)
+            # /versions/<version> or /versions/<version>:<action>
+            ver_raw = rest3[0]
+            # detect colon-actions like "1:access", "latest:access"
+            if ":" in ver_raw:
+                ver_part, _, action = ver_raw.partition(":")
+            else:
+                ver_part = ver_raw
+                action = ""
+            if action == "access":
+                if method == "GET":
+                    payload = sm.access_version(secret_id, ver_part)
+                    import base64 as _b64
+                    return self._send_json(200, {
+                        "name": f"projects/local/secrets/{secret_id}/versions/{ver_part}",
+                        "payload": _b64.b64encode(payload).decode("ascii"),
+                    })
+                return self._error(405, method)
+            if action == "disable":
+                if method == "POST":
+                    return self._send_json(200,
+                                           sm.disable_version(secret_id, ver_part))
+                return self._error(405, method)
+            if action == "enable":
+                if method == "POST":
+                    return self._send_json(200,
+                                           sm.enable_version(secret_id, ver_part))
+                return self._error(405, method)
+            if action == "destroy":
+                if method == "POST":
+                    return self._send_json(200,
+                                           sm.destroy_version(secret_id, ver_part))
+                return self._error(405, method)
+            # no action — version metadata
+            if method == "GET":
+                return self._send_json(200,
+                                       sm.get_version(secret_id, ver_part))
+            return self._error(405, method)
+
+        # ----- Cloud KMS -----
+        def _route_kms(self, method, p, query):
+            kms = services.kms
+            if not p or p[0] != "keyrings":
+                return self._error(404, "expected /kms/keyrings/...")
+            rest = p[1:]
+            if not rest:
+                if method == "GET":
+                    return self._send_json(200,
+                                           {"keyRings": kms.list_key_rings()})
+                return self._error(405, method)
+            kr_id = rest[0]
+            rest2 = rest[1:]
+            if not rest2:
+                if method == "POST":
+                    return self._send_json(200, kms.create_key_ring(kr_id))
+                if method == "GET":
+                    return self._send_json(200, kms.get_key_ring(kr_id))
+                return self._error(405, method)
+            if rest2[0] != "keys":
+                return self._error(404, "expected /kms/keyrings/<kr>/keys/...")
+            rest3 = rest2[1:]
+            if not rest3:
+                if method == "GET":
+                    return self._send_json(200,
+                                           {"cryptoKeys": kms.list_crypto_keys(kr_id)})
+                return self._error(405, method)
+            key_id = rest3[0]
+            rest4 = rest3[1:]
+            if not rest4:
+                if method == "POST":
+                    purpose = query.get("purpose", ["ENCRYPT_DECRYPT"])[0]
+                    return self._send_json(200,
+                                           kms.create_crypto_key(kr_id, key_id,
+                                                                   purpose=purpose))
+                if method == "GET":
+                    return self._send_json(200,
+                                           kms.get_crypto_key(kr_id, key_id))
+                return self._error(405, method)
+            action = rest4[0]
+            if action == "versions" and method == "GET":
+                return self._send_json(200, {
+                    "cryptoKeyVersions":
+                        kms.list_crypto_key_versions(kr_id, key_id)
+                })
+            if action == "encrypt" and method == "POST":
+                body = self._json_body()
+                import base64 as _b64
+                pt_raw = body.get("plaintext", "")
+                aad_raw = body.get("additionalAuthenticatedData", "")
+                try:
+                    plaintext = _b64.b64decode(pt_raw)
+                except Exception:
+                    plaintext = pt_raw.encode("utf-8") if isinstance(pt_raw, str) else pt_raw
+                try:
+                    aad = _b64.b64decode(aad_raw) if aad_raw else b""
+                except Exception:
+                    aad = aad_raw.encode("utf-8") if isinstance(aad_raw, str) else b""
+                result = kms.encrypt(kr_id, key_id, plaintext, aad)
+                return self._send_json(200, result)
+            if action == "decrypt" and method == "POST":
+                body = self._json_body()
+                import base64 as _b64
+                ct = body.get("ciphertext", "")
+                aad_raw = body.get("additionalAuthenticatedData", "")
+                try:
+                    aad = _b64.b64decode(aad_raw) if aad_raw else b""
+                except Exception:
+                    aad = aad_raw.encode("utf-8") if isinstance(aad_raw, str) else b""
+                plaintext = kms.decrypt(kr_id, key_id, ct, aad)
+                return self._send_json(200, {
+                    "plaintext": _b64.b64encode(plaintext).decode("ascii")
+                })
+            if action == "generateDataKey" and method == "POST":
+                result = kms.generate_data_key(kr_id, key_id)
+                return self._send_json(200, result)
+            return self._error(404, f"unknown KMS action: {action}")
+
+        # ----- Cloud Logging -----
+        def _route_logging(self, method, p, query):
+            lg = services.logging
+            if not p:
+                return self._error(404, "expected /logging/...")
+            section = p[0]
+
+            # /logging/entries:write  /logging/entries:tail  /logging/entries
+            if section.startswith("entries"):
+                if ":" in section:
+                    _, _, action = section.partition(":")
+                else:
+                    action = ""
+                if action == "write" and method == "POST":
+                    body = self._json_body()
+                    entries = body.get("entries", [])
+                    log_name = body.get("logName", "")
+                    ids = lg.write_entries(entries, log_name=log_name)
+                    return self._send_json(200, {"insertedIds": ids})
+                if action == "tail" and method == "GET":
+                    n = int(query.get("n", ["100"])[0])
+                    return self._send_json(200, {"entries": lg.tail(n)})
+                if not action:
+                    if method == "POST":
+                        body = self._json_body()
+                        entries = body.get("entries", [])
+                        log_name = body.get("logName", "")
+                        ids = lg.write_entries(entries, log_name=log_name)
+                        return self._send_json(200, {"insertedIds": ids})
+                    if method == "GET":
+                        log_name = query.get("logName", [None])[0]
+                        sev_min = query.get("severityMin", [None])[0]
+                        filt = query.get("filter", [None])[0]
+                        ps = int(query.get("pageSize", ["1000"])[0])
+                        entries = lg.list_entries(log_name=log_name,
+                                                  severity_min=sev_min,
+                                                  filter_expr=filt,
+                                                  page_size=ps)
+                        return self._send_json(200, {"entries": entries})
+                return self._error(405, method)
+
+            if section == "logs":
+                rest = p[1:]
+                if not rest:
+                    if method == "GET":
+                        return self._send_json(200,
+                                               {"logNames": lg.list_log_names()})
+                    return self._error(405, method)
+                log_name = "/".join(rest)
+                if method == "DELETE":
+                    n = lg.delete_log(log_name)
+                    return self._send_json(200, {"deleted": n})
+                return self._error(405, method)
+
+            return self._error(404, f"unknown logging route: {section}")
+
+        # ----- Cloud Monitoring -----
+        def _route_monitoring(self, method, p, query):
+            mon = services.monitoring
+            if not p:
+                return self._error(404, "expected /monitoring/...")
+            section = p[0]
+            rest = p[1:]
+
+            if section == "metricDescriptors":
+                if not rest:
+                    if method == "GET":
+                        return self._send_json(200, {
+                            "metricDescriptors": mon.list_metric_descriptors()})
+                    if method == "POST":
+                        body = self._json_body()
+                        desc = mon.create_metric_descriptor(
+                            metric_type=body.get("type", ""),
+                            display_name=body.get("displayName", ""),
+                            description=body.get("description", ""),
+                            value_type=body.get("valueType", "DOUBLE"),
+                            metric_kind=body.get("metricKind", "GAUGE"),
+                            unit=body.get("unit", "1"),
+                            labels=body.get("labels"),
+                        )
+                        return self._send_json(200, desc)
+                    return self._error(405, method)
+                metric_type = "/".join(rest)
+                if method == "GET":
+                    return self._send_json(200,
+                                           mon.get_metric_descriptor(metric_type))
+                if method == "DELETE":
+                    mon.delete_metric_descriptor(metric_type)
+                    return self._send_json(200, {"deleted": metric_type})
+                return self._error(405, method)
+
+            if section == "timeSeries":
+                if not rest:
+                    if method == "POST":
+                        body = self._json_body()
+                        ts_list = body.get("timeSeries", body if isinstance(body, list) else [])
+                        n = mon.write_time_series(ts_list)
+                        return self._send_json(200, {"written": n})
+                    if method == "GET":
+                        mt = query.get("metricType", [None])[0]
+                        st = query.get("startTime", [None])[0]
+                        et = query.get("endTime", [None])[0]
+                        aligner = query.get("aligner", ["ALIGN_NONE"])[0]
+                        period = query.get("period", [None])[0]
+                        ps = int(query.get("pageSize", ["1000"])[0])
+                        ts = mon.list_time_series(
+                            metric_type=mt,
+                            start_time=float(st) if st else None,
+                            end_time=float(et) if et else None,
+                            aligner=aligner,
+                            alignment_period=float(period) if period else None,
+                            page_size=ps,
+                        )
+                        return self._send_json(200, {"timeSeries": ts})
+                    return self._error(405, method)
+                return self._error(404, "bad monitoring timeSeries route")
+
+            return self._error(404, f"unknown monitoring route: {section}")
+
+        # ----- Identity Platform -----
+        def _route_identityplatform(self, method, p, query):
+            auth = services.identityplatform
+            if not p:
+                return self._error(404, "expected /identityplatform/accounts/...")
+
+            # p[0] may be "accounts", "accounts:signUp", "accounts:signIn", etc.
+            first = p[0]
+            if ":" in first:
+                # colon-action form: /identityplatform/accounts:signUp
+                base, _, action = first.partition(":")
+                if base != "accounts":
+                    return self._error(404, f"unknown segment: {first}")
+                if action == "signUp" and method == "POST":
+                    body = self._json_body()
+                    result = auth.sign_up(
+                        email=body.get("email", ""),
+                        password=body.get("password", ""),
+                        display_name=body.get("displayName", ""),
+                    )
+                    return self._send_json(200, result)
+                if action == "signIn" and method == "POST":
+                    body = self._json_body()
+                    result = auth.sign_in(
+                        email=body.get("email", ""),
+                        password=body.get("password", ""),
+                    )
+                    return self._send_json(200, result)
+                if action == "verify" and method == "POST":
+                    body = self._json_body()
+                    token = body.get("idToken", "")
+                    payload = auth.verify_id_token(token)
+                    return self._send_json(200, {"payload": payload})
+                return self._error(404, f"unknown accounts action: {action}")
+
+            if first != "accounts":
+                return self._error(404, "expected /identityplatform/accounts/...")
+
+            rest = p[1:]
+            if not rest:
+                # GET /identityplatform/accounts  → list users
+                if method == "GET":
+                    max_r = int(query.get("maxResults", ["1000"])[0])
+                    return self._send_json(200, {"users": auth.list_users(max_r)})
+                return self._error(405, method)
+
+            # /identityplatform/accounts/<uid> and sub-paths
+            uid = rest[0]
+            rest2 = rest[1:]
+            if not rest2:
+                if method == "GET":
+                    return self._send_json(200, auth.get_user(uid))
+                if method == "PATCH":
+                    body = self._json_body()
+                    result = auth.update_user(
+                        uid,
+                        display_name=body.get("displayName"),
+                        password=body.get("password"),
+                        disabled=body.get("disabled"),
+                    )
+                    return self._send_json(200, result)
+                if method == "DELETE":
+                    auth.delete_user(uid)
+                    return self._send_json(200, {"deleted": uid})
+                return self._error(405, method)
+            sub_action = rest2[0]
+            if sub_action == "customToken" and method == "POST":
+                body = self._json_body()
+                token = auth.create_custom_token(
+                    uid,
+                    claims=body.get("claims"),
+                    ttl=int(body.get("ttl", 3600)),
+                )
+                return self._send_json(200, {"customToken": token})
+            return self._error(404, f"unknown identityplatform route: {sub_action}")
 
     return Handler
 
