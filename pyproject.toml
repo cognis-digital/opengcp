@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opengcp"
+version = "0.1.0"
+description = "Independent open-source LOCAL reimplementation of core Google Cloud Platform primitives (object storage, document DB, pub/sub, event functions) for offline development and testing."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Cognis Digital", email = "engineering@cognisdigital.com" }]
+keywords = ["gcp", "emulator", "local", "cloud", "storage", "firestore", "pubsub", "functions", "testing", "offline"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://github.com/cognis-digital/opengcp"
+Repository = "https://github.com/cognis-digital/opengcp"
+
+[project.scripts]
+opengcp = "opengcp.cli:main"
+
+[tool.setuptools]
+packages = ["opengcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
