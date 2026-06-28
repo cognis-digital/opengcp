@@ -1,5 +1,35 @@
 # opengcp
 
+
+<!-- cognis:example:start -->
+## 🔎 Example output
+
+Real, reproducible output from the tool — runs offline:
+
+```console
+$ opengcp-emit --help
+usage: opengcp-emit [-h]
+                    --to {stix,taxii,misp,sigma,splunk,elastic,slack,discord,webhook,brief,findings}
+                    [--url URL] [--token TOKEN] [--dry-run]
+                    [input]
+
+forward opengcp JSON findings to a platform via cognis-connect
+
+positional arguments:
+  input                 findings JSON file (default: stdin)
+
+options:
+  -h, --help            show this help message and exit
+  --to {stix,taxii,misp,sigma,splunk,elastic,slack,discord,webhook,brief,findings}
+  --url URL
+  --token TOKEN
+  --dry-run
+```
+
+> Blocks above are real `opengcp` output — reproduce them from a clone.
+
+<!-- cognis:example:end -->
+
 ## Usage — step by step
 
 A typical local-cloud lifecycle with the `opengcp` console command:
